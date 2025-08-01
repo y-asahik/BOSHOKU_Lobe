@@ -1,0 +1,49 @@
+# Python virtual environment
+bin/
+lib/
+lib64/
+share/
+pyvenv.cfg
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Log files
+*.log
+app.log
+inspection_system.log
+
+# Image files
+*.jpg
+*.jpeg
+*.png
+image.jpg
+
+# CSV files
+*.csv
+predictions*.csv
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Model files (if large)
+path/to/exported/model/
+
+# Image output directory
+img/
+img_*/
