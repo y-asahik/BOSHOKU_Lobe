@@ -1,7 +1,5 @@
 import os
-import csv
 import RPi.GPIO as GPIO
-#from time import sleep
 from PIL import Image
 from lobe import ImageModel
 import cv2
@@ -10,6 +8,7 @@ from datetime import datetime, time as dt_time
 import subprocess
 import time
 import threading
+import queue
 from socket import *
 
 # トリミング領域の指定 (左上x, 左上y, 幅, 高さ)
@@ -23,9 +22,6 @@ GPIO.setmode(GPIO.BCM)  # GPIO番号でピンを指定
 GPIO.setup(DO1_PIN, GPIO.OUT)
 GPIO.setup(DO2_PIN, GPIO.OUT)
 
-# 画像を保存するフォルダを作成
-img_dir = "img"
-os.makedirs(img_dir, exist_ok=True)
 
 # モデルを読み込む
 model = ImageModel.load('path/to/exported/model/CASE0241_Tap TFLite')
@@ -33,11 +29,7 @@ model = ImageModel.load('path/to/exported/model/CASE0241_Tap TFLite')
 # カメラの解像度を設定（1920x1080）
 subprocess.run(["v4l2-ctl", "--set-fmt-video=width=1920,height=1080,pixelformat=MJPG", "-d", "/dev/video0"])
 
-# カメラの設定
-#camera = cv2.VideoCapture(0)  # 通常、0はデフォルトのカメラを指します
-# 高解像度に設定
-
-# OpenCV でカメラを開く
+# カメラの設定（OpenCV でカメラを開く）
 camera = cv2.VideoCapture(0, cv2.CAP_V4L2)  # V4L2 モードで開く
 camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # MJPG を指定
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
@@ -60,17 +52,10 @@ is_focus_initialized = False
 
 # 撮影回数カウンタ
 capture_count = 0
-# 保存用カウンタ
-save_count = 0
-# 最後の保存時刻
-last_save_time = time.time()
 # タイマー制御フラグ
 running = True
 # 設定
 judgment_interval = 1.0  # 判定間隔（秒）
-save_interval = 10   # 保存間隔（秒）
-enable_image_save = False  # 画像保存ON/OFF
-enable_csv_output = False  # CSV出力ON/OFF
 
 # グローバル変数
 current_frame = None
@@ -78,44 +63,19 @@ last_judgment_time = 0
 last_prediction = "初期化中"
 last_prediction_color = (0, 0, 0)
 
-# 前回の日次リネーム時刻を記録する変数
-last_daily_rename = None
-
-# CSVファイルのパス
-csv_path = 'predictions.csv'
-
-# CSVファイルにデータを追加する関数
-def append_to_csv(prediction_text, labels, datetime_text):
-    # CSVファイルのパス
-#    csv_path = 'predictions.csv'
-    
-    # ヘッダーを定義（ファイルが新規作成される場合にのみ使用）
-    headers = ['DateTime', 'Prediction', 'Label', 'Confidence']
-
-    # ファイルが存在しない場合はヘッダーを追加
-    try:
-        with open(csv_path, 'x', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow(headers)
-    except FileExistsError:
-        pass  # ファイルが存在する場合は何もしない
-
-    # データをCSVファイルに書き込む
-    with open(csv_path, 'a', newline='') as file:
-        writer = csv.writer(file)
-        # 各ラベルと信頼度について行を追加
-        for label, confidence in labels:
-            writer.writerow([datetime_text, prediction_text, label, confidence * 100])
+# 非同期処理用キュー
+frame_queue = queue.Queue(maxsize=2)
+result_queue = queue.Queue()
 
 
 # 初回撮影の前にフォーカスを調整するためのダミーキャプチャを実行する関数
 def dummy_capture_to_adjust_focus():
     print("Performing dummy captures to adjust focus...")
     # オートフォーカスを無効にし、手動フォーカスを設定
-    subprocess.run(["v4l2-ctl", "-d", "/dev/video0", "-c", "focus_auto=0"])
+    subprocess.run(["v4l2-ctl", "-d", "/dev/video0", "-c", "focus_automatic_continuous=0"])
     
     # フォーカスを手動で設定し、ダミーのキャプチャを複数回行うことでフォーカスを安定させる
-    for i in range(3):  # 10回ダミーキャプチャを繰り返してフォーカスを安定させる
+    for i in range(3):  # 3回ダミーキャプチャを繰り返してフォーカスを安定させる
         subprocess.run(["v4l2-ctl", "-d", "/dev/video0", "-c", f"focus_absolute={focus_value}"])
         time.sleep(0.5)  # フォーカスが動作するまで待機
         ret, _ = camera.read()  # ダミーでフレームを読み込む
@@ -124,116 +84,74 @@ def dummy_capture_to_adjust_focus():
         else:
             print(f"Dummy capture {i+1} successful")
 
-# 日次リネーム処理を行う関数
-def daily_rename():
-    global last_daily_rename
+
+# 非同期判定処理スレッド
+def judgment_worker():
     global capture_count
     
-    # 現在時刻を取得
-    now = datetime.now()
-    current_time = now.time()
-    target_time = dt_time(8, 0)  # 朝8時
-    
-    # 今日の日付
-    today = now.date()
-    
-    # 前回実行した日付と比較して、今日まだ実行していない場合のみ実行
-    if (last_daily_rename is None or last_daily_rename != today) and current_time >= target_time:
-        print("Starting daily rename process...")
-        
-        # タイムスタンプの生成
-        timestamp = now.strftime('%Y%m%d_%H%M')
-        
-        # imgフォルダをリネーム
-        if os.path.exists(img_dir) and os.path.isdir(img_dir):
-            new_img_dir = f"{img_dir}_{timestamp}"
-            os.rename(img_dir, new_img_dir)
-            print(f"Folder renamed to {new_img_dir}")
+    while running:
+        try:
+            # フレームを待機
+            frame_data = frame_queue.get(timeout=1)
+            if frame_data is None:
+                break
+                
+            capture_count += 1
             
-            # 新しいimgフォルダを作成
-            os.makedirs(img_dir, exist_ok=True)
-            print(f"New {img_dir} folder created")
-        
-        # predictions.csvをリネーム
-        if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
-            new_csv = f"predictions_{timestamp}.csv"
-            os.rename(csv_path, new_csv)
-            print(f"CSV file renamed to {new_csv}")
-        
-        # イメージファイルカウンタをリセット
-        capture_count = 0
-        print("Image counter reset to 0")
-        
-        # 実行日付を記録
-        last_daily_rename = today
-        print("Daily rename process completed")
+            # 撮影時間の取得
+            now = datetime.now()
+            datetime_text = now.strftime('%Y-%m-%d %H:%M:%S')
+            
+            print(f"--- {datetime_text} ---")
+            print("Performing judgment...")
+            
+            # トリミング
+            cropped = frame_data[y:y + h, x:x + w]
+            
+            # PIL.Imageオブジェクトに変換し、モデルに渡す前に必要な場合はさらに前処理
+            img_pil = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
+            result = model.predict(img_pil)
+            
+            print(f"Prediction: {result.prediction}")
+            
+            # 結果をキューに送信
+            result_data = {
+                'prediction': result.prediction,
+                'labels': result.labels
+            }
+            result_queue.put(result_data)
+            
+            for label, confidence in result.labels:
+                print(f"{label}: {confidence*100}%")
+                
+        except queue.Empty:
+            continue
+        except Exception as e:
+            print(f"Error in judgment worker: {e}")
+    
+    print("Judgment thread: exiting while loop")
 
-# 定期的に日次リネームをチェックする関数
-def check_daily_rename():
-    while True:
-        daily_rename()
-        time.sleep(60)  # 1分間隔でチェック
-
-# 判定処理を行う関数
-def perform_judgment():
-    global capture_count, save_count, last_save_time, last_prediction, last_prediction_color, current_frame
+# GPIO制御処理
+def process_judgment_result():
+    global last_prediction, last_prediction_color
     
-    if current_frame is None:
-        return
+    try:
+        result_data = result_queue.get_nowait()
         
-    capture_count += 1
-    current_time = time.time()
-    should_save = (current_time - last_save_time) >= save_interval
-    
-    # 撮影時間の取得
-    now = datetime.now()
-    datetime_text = now.strftime('%Y-%m-%d %H:%M:%S')
-    datetime_img = now.strftime('%Y-%m-%d %H%M%S')
-    
-    print(f"--- {datetime_text} ---")
-    print("Performing judgment...")
-    
-    # トリミング
-    cropped = current_frame[y:y + h, x:x + w]
-    
-    # PIL.Imageオブジェクトに変換し、モデルに渡す前に必要な場合はさらに前処理
-    img_pil = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
-    result = model.predict(img_pil)
-    
-    print(f"Prediction: {result.prediction}")
-
-    # 判定結果に応じてGPIO制御
-    if result.prediction == 'OK':
-        GPIO.output(DO1_PIN, GPIO.HIGH)
-        GPIO.output(DO2_PIN, GPIO.LOW)
-        last_prediction_color = (255, 0, 0)  # 青色
-        last_prediction = "OK"
-    elif result.prediction == 'Untap':
-        GPIO.output(DO1_PIN, GPIO.LOW)
-        GPIO.output(DO2_PIN, GPIO.HIGH)
-        last_prediction = "UnTap"
-        last_prediction_color = (0, 0, 255)  # 赤色
-    elif result.prediction == 'NoHole':
-        GPIO.output(DO1_PIN, GPIO.LOW)
-        GPIO.output(DO2_PIN, GPIO.HIGH)
-        last_prediction = "NoHole"
-        last_prediction_color = (0, 0, 255)  # 赤色
-        
-    # CSVファイルに結果を追加（設定で有効になっている場合のみ）
-    if enable_csv_output and should_save:
-        append_to_csv(last_prediction, result.labels, datetime_text)
-    
-    # 画像保存（設定で有効になっており、保存間隔に達している場合のみ）
-    if enable_image_save and should_save:
-        os.makedirs(img_dir, exist_ok=True)
-        save_count += 1
-        file_path = os.path.join(img_dir, f"image_{save_count:05d}_{last_prediction}_{datetime_img}.jpg")
-        cv2.imwrite(file_path, cropped)
-        print(f"Image saved as {file_path}")
-        last_save_time = current_time
-        
-    for label, confidence in result.labels:
-        print(f"{label}: {confidence*100}%")  
+        # 判定結果に応じてGPIO制御
+        if result_data['prediction'] == 'OK':
+            GPIO.output(DO1_PIN, GPIO.HIGH)
+            GPIO.output(DO2_PIN, GPIO.LOW)
+            last_prediction_color = (255, 0, 0)  # 青色
+            last_prediction = "OK"
+        elif result_data['prediction'] == 'NG':
+            GPIO.output(DO1_PIN, GPIO.LOW)
+            GPIO.output(DO2_PIN, GPIO.HIGH)
+            last_prediction = "NG"
+            last_prediction_color = (0, 0, 255)  # 赤色
+            
+    except queue.Empty:
+        pass  
 
 # ライブビュー表示と判定を行う関数
 def live_view_loop():
@@ -253,14 +171,31 @@ def live_view_loop():
                 print("Failed to grab frame")
                 time.sleep(0.1)
                 continue
+            
+            if not running:  # 追加チェック
+                print("Live thread: running=False detected, breaking")
+                break
                 
             current_frame = frame
             current_time = time.time()
             
             # 判定タイミングかチェック
             if current_time - last_judgment_time >= judgment_interval:
-                perform_judgment()
-                last_judgment_time = current_time
+                # フレームをキューに送信（ノンブロッキング）
+                try:
+                    frame_queue.put_nowait(frame.copy())
+                    last_judgment_time = current_time
+                except queue.Full:
+                    # キューが満杯の場合は古いフレームを破棄
+                    try:
+                        frame_queue.get_nowait()
+                        frame_queue.put_nowait(frame.copy())
+                        last_judgment_time = current_time
+                    except queue.Empty:
+                        pass
+            
+            # 判定結果の処理
+            process_judgment_result()
             
             # 表示用画像作成
             cropped = frame[y:y + h, x:x + w]
@@ -302,61 +237,91 @@ def live_view_loop():
             
             # 画面更新
             cv2.imshow('Prediction', output_image)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            
+            # 'q'キーチェック
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("Live thread: 'q' key pressed")
+                running = False
+                break
+                
+            # ウィンドウが閉じられたかチェック
+            try:
+                window_prop = cv2.getWindowProperty('Prediction', cv2.WND_PROP_VISIBLE)
+                if window_prop < 1:
+                    print("Window closed by user")
+                    running = False
+                    break
+            except cv2.error:
+                print("Window closed (cv2.error)")
+                running = False
                 break
                 
         except Exception as e:
             print(f"Error in live view loop: {e}")
             time.sleep(0.1)
+    
+    print("Live thread: exiting while loop")
 
 
-# プログラム起動時に日次リネームをチェック
-daily_rename()
 
-# 日次リネームチェック用のスレッドを開始
-daily_rename_thread = threading.Thread(target=check_daily_rename, daemon=True)
-daily_rename_thread.start()
-print("Daily rename checker started")
+# 判定処理スレッドを開始
+judgment_thread = threading.Thread(target=judgment_worker, daemon=False)
+judgment_thread.start()
+print("Judgment worker thread started")
 
 # ライブビュー＋判定スレッドを開始
-live_thread = threading.Thread(target=live_view_loop, daemon=True)
+live_thread = threading.Thread(target=live_view_loop, daemon=False)
 live_thread.start()
-print(f"Live view with judgment started (judgment interval: {judgment_interval}s, save interval: {save_interval}s)")
-print(f"Image save: {'enabled' if enable_image_save else 'disabled'}, CSV output: {'enabled' if enable_csv_output else 'disabled'}")
+print(f"Live view with judgment started (judgment interval: {judgment_interval}s)")
 
 try:
     # プログラムが終了するまで待機
-    message = input("Press enter to quit (or 'q' in video window)\n\n")
+    import select
+    import sys
+    
+    print("Press enter to quit (or 'q' in video window)")
+    while running:
+        # ノンブロッキング入力チェック
+        ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+        if ready:
+            input()  # Enter押下を検出
+            break
+        # runningがFalseになったら終了
+        if not running:
+            break
+    
+    print("Shutting down...")
     running = False
 
-#    while True:
-#        command = input("Enter 'd' to capture and predict, 'r' to reset DO, or 'q' to exit: ")
-#        if command == 'd':
-#            capture_and_predict()
-#        elif command == 'r':
-#            reset_do()
-#        elif command == 'q':
-#            break
-
 finally:
-    camera.release()
-    cv2.destroyAllWindows()
-    GPIO.cleanup()
-
-    # 終了時刻の取得
-    now = datetime.now()
-    timestamp = now.strftime('%Y%m%d_%H%M')
-
-    # imgフォルダをリネーム
-    new_img_dir = f"{img_dir}_{timestamp}"
-    if os.path.exists(img_dir) and os.path.isdir(img_dir):
-        os.rename(img_dir, new_img_dir)
-        print(f"フォルダを {new_img_dir} に変更しました")
-
-    # predictions.csv をリネーム
-    if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
-        new_csv = f"predictions_{timestamp}.csv"
-        os.rename(csv_path, new_csv)
-        print(f"CSVファイルを {new_csv} に変更しました")
-    else:
-        print("CSVファイルが存在しないか空のため、リネームをスキップしました")
+    print("Cleaning up resources...")
+    running = False
+    
+    # 短時間待機してスレッドが自然終了するのを待つ
+    time.sleep(0.5)
+    
+    # リソース解放
+    try:
+        cv2.destroyAllWindows()
+        print("Windows destroyed")
+    except:
+        pass
+    
+    try:
+        camera.release()
+        print("Camera released")
+    except:
+        pass
+    
+    try:
+        GPIO.cleanup()
+        print("GPIO cleaned up")
+    except:
+        pass
+    
+    print("Application terminated")
+    
+    # 強制終了
+    import sys
+    sys.exit(0)
