@@ -12,28 +12,28 @@ import queue
 from socket import *
 
 # トリミング領域の指定 (左上x, 左上y, 幅, 高さ)
-x, y, w, h = 480, 300, 400, 400
+x, y, w, h = 195, 140, 200, 200
 
 # GPIO設定（DO出力のみ使用）
 DO1_PIN = 23
-DO2_PIN = 24
+#DO2_PIN = 24
 
 GPIO.setmode(GPIO.BCM)  # GPIO番号でピンを指定
 GPIO.setup(DO1_PIN, GPIO.OUT)
-GPIO.setup(DO2_PIN, GPIO.OUT)
+#GPIO.setup(DO2_PIN, GPIO.OUT)
 
 
 # モデルを読み込む
-model = ImageModel.load('path/to/exported/model/CASE0241_Tap TFLite')
+model = ImageModel.load('path/to/exported/model/BOSHOKU TFLite')
 
 # カメラの解像度を設定（1920x1080）
-subprocess.run(["v4l2-ctl", "--set-fmt-video=width=1920,height=1080,pixelformat=MJPG", "-d", "/dev/video0"])
+#subprocess.run(["v4l2-ctl", "--set-fmt-video=width=1920,height=1080,pixelformat=MJPG", "-d", "/dev/video0"])
 
 # カメラの設定（OpenCV でカメラを開く）
 camera = cv2.VideoCapture(0, cv2.CAP_V4L2)  # V4L2 モードで開く
-camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # MJPG を指定
-camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+#camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # MJPG を指定
+#camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+#camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 # ★ 追加：ライト点灯を確実にするためのダミーキャプチャ
 ret, _ = camera.read()
@@ -45,7 +45,7 @@ width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
 height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
 print(f"Camera resolution: {int(width)}x{int(height)}")
 
-focus_value = 572
+focus_value = 255
 
 # 初回のみダミーキャプチャを実行するためのフラグ
 is_focus_initialized = False
@@ -55,7 +55,7 @@ capture_count = 0
 # タイマー制御フラグ
 running = True
 # 設定
-judgment_interval = 1.0  # 判定間隔（秒）
+judgment_interval = 1.5  # 判定間隔（秒）
 
 # グローバル変数
 current_frame = None
@@ -99,20 +99,32 @@ def judgment_worker():
             capture_count += 1
             
             # 撮影時間の取得
+            start_time = time.time()
             now = datetime.now()
             datetime_text = now.strftime('%Y-%m-%d %H:%M:%S')
             
             print(f"--- {datetime_text} ---")
             print("Performing judgment...")
             
-            # トリミング
+            # トリミング処理時間計測
+            crop_start = time.time()
             cropped = frame_data[y:y + h, x:x + w]
+            crop_time = time.time() - crop_start
             
-            # PIL.Imageオブジェクトに変換し、モデルに渡す前に必要な場合はさらに前処理
+            # PIL変換処理時間計測
+            convert_start = time.time()
             img_pil = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
+            convert_time = time.time() - convert_start
+            
+            # AI推論処理時間計測
+            inference_start = time.time()
             result = model.predict(img_pil)
+            inference_time = time.time() - inference_start
+            
+            total_time = time.time() - start_time
             
             print(f"Prediction: {result.prediction}")
+            print(f"Processing times - Crop: {crop_time:.3f}s, Convert: {convert_time:.3f}s, Inference: {inference_time:.3f}s, Total: {total_time:.3f}s")
             
             # 結果をキューに送信
             result_data = {
@@ -141,12 +153,12 @@ def process_judgment_result():
         # 判定結果に応じてGPIO制御
         if result_data['prediction'] == 'OK':
             GPIO.output(DO1_PIN, GPIO.HIGH)
-            GPIO.output(DO2_PIN, GPIO.LOW)
+#            GPIO.output(DO2_PIN, GPIO.LOW)
             last_prediction_color = (255, 0, 0)  # 青色
             last_prediction = "OK"
-        elif result_data['prediction'] == 'NG':
+        else :
             GPIO.output(DO1_PIN, GPIO.LOW)
-            GPIO.output(DO2_PIN, GPIO.HIGH)
+#            GPIO.output(DO2_PIN, GPIO.HIGH)
             last_prediction = "NG"
             last_prediction_color = (0, 0, 255)  # 赤色
             
