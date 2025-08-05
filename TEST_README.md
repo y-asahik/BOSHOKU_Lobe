@@ -17,12 +17,12 @@ app.pyにキーボードでDI1状態を疑似的に制御する機能を追加�
 ## 元の実装に戻す方法
 app.pyの以下の変更を元に戻してください：
 
-### 1. 仮想DI状態の変数を削除またはコメントアウト
+### 1. 仮想DI状態の変数を削除またはコメントアウト（66～67行）
 ```python
 # virtual_di1_status = False  # この行を削除またはコメントアウト
 ```
 
-### 2. 関数のglobal宣言からvirtual_di1_statusを削除
+### 2. 関数のglobal宣言からvirtual_di1_statusを削除（173行）
 ```python
 # 現在（テスト用）
 global running, current_frame, last_judgment_time, is_focus_initialized, last_prediction, last_prediction_color, virtual_di1_status
@@ -31,7 +31,7 @@ global running, current_frame, last_judgment_time, is_focus_initialized, last_pr
 global running, current_frame, last_judgment_time, is_focus_initialized, last_prediction, last_prediction_color
 ```
 
-### 3. GPIO読み取りのコメントを外す
+### 3. GPIO読み取りのコメントを外す（197～199行）
 ```python
 # 現在（テスト用）
 # di1_status = GPIO.input(DI1_PIN)  # 実際のGPIO読み取りをコメントアウト
@@ -42,7 +42,7 @@ di1_status = GPIO.input(DI1_PIN)  # コメントを外す
 # di1_status = virtual_di1_status  # この行を削除またはコメントアウト
 ```
 
-### 4. GPIO比較のコメントを外す
+### 4. GPIO比較のコメントを外す（201行）
 ```python
 # 現在（テスト用）
 # if di1_status == GPIO.HIGH:  # 実際のGPIO比較をコメントアウト
@@ -53,7 +53,7 @@ if di1_status == GPIO.HIGH:  # コメントを外す
 # if di1_status:  # この行を削除またはコメントアウト
 ```
 
-### 5. スペースキーのハンドリングを削除（オプション）
+### 5. スペースキーのハンドリングを削除（オプション）（274～277行）
 ```python
 # この部分を削除またはコメントアウト
 elif key == ord(' '):  # スペースキーでDI1状態を切り替え

@@ -46,7 +46,7 @@ width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
 height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
 print(f"Camera resolution: {int(width)}x{int(height)}")
 
-focus_value = 255
+focus_value = 210
 
 # 初回のみダミーキャプチャを実行するためのフラグ
 is_focus_initialized = False
@@ -229,6 +229,7 @@ def live_view_loop():
             # 判定結果を画像に描画
             padding_height = 150
             bg_color = (255, 255, 255)
+#            new_width = round(w * 1.5)
             new_width = round(w * 1.5)
             output_image = np.full((h + padding_height, new_width, 3), bg_color, dtype=np.uint8)
             
