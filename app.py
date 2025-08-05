@@ -17,11 +17,12 @@ x, y, w, h = 195, 140, 200, 200
 # GPIO設定（DO出力のみ使用）
 DO1_PIN = 23
 #DO2_PIN = 24
+DI1_PIN = 17
 
 GPIO.setmode(GPIO.BCM)  # GPIO番号でピンを指定
 GPIO.setup(DO1_PIN, GPIO.OUT)
 #GPIO.setup(DO2_PIN, GPIO.OUT)
-
+GPIO.setup(DI1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
 # モデルを読み込む
 model = ImageModel.load('path/to/exported/model/BOSHOKU TFLite')
@@ -62,6 +63,8 @@ current_frame = None
 last_judgment_time = 0
 last_prediction = "初期化中"
 last_prediction_color = (0, 0, 0)
+# テスト用DI状態制御
+virtual_di1_status = False  # テスト用の仮想DI1状態
 
 # 非同期処理用キュー
 frame_queue = queue.Queue(maxsize=2)
@@ -167,7 +170,7 @@ def process_judgment_result():
 
 # ライブビュー表示と判定を行う関数
 def live_view_loop():
-    global running, current_frame, last_judgment_time, is_focus_initialized
+    global running, current_frame, last_judgment_time, is_focus_initialized, last_prediction, last_prediction_color, virtual_di1_status
     
     # 初回フォーカス調整
     if not is_focus_initialized:
@@ -191,23 +194,34 @@ def live_view_loop():
             current_frame = frame
             current_time = time.time()
             
-            # 判定タイミングかチェック
-            if current_time - last_judgment_time >= judgment_interval:
-                # フレームをキューに送信（ノンブロッキング）
-                try:
-                    frame_queue.put_nowait(frame.copy())
-                    last_judgment_time = current_time
-                except queue.Full:
-                    # キューが満杯の場合は古いフレームを破棄
+            # DI1の状態をチェック（テスト用：仮想DI状態を使用）
+            # di1_status = GPIO.input(DI1_PIN)  # 実際のGPIO読み取りをコメントアウト
+            di1_status = virtual_di1_status
+            
+            # if di1_status == GPIO.HIGH:  # 実際のGPIO比較をコメントアウト
+            if di1_status:  # テスト用：仮想DI状態で判定
+                # DI1がONの場合：判定処理を実行
+                if current_time - last_judgment_time >= judgment_interval:
+                    # フレームをキューに送信（ノンブロッキング）
                     try:
-                        frame_queue.get_nowait()
                         frame_queue.put_nowait(frame.copy())
                         last_judgment_time = current_time
-                    except queue.Empty:
-                        pass
-            
-            # 判定結果の処理
-            process_judgment_result()
+                    except queue.Full:
+                        # キューが満杯の場合は古いフレームを破棄
+                        try:
+                            frame_queue.get_nowait()
+                            frame_queue.put_nowait(frame.copy())
+                            last_judgment_time = current_time
+                        except queue.Empty:
+                            pass
+                
+                # 判定結果の処理
+                process_judgment_result()
+            else:
+                # DI1がOFFの場合：判定停止、表示を"---"に設定
+                last_prediction = "---"
+                last_prediction_color = (128, 128, 128)  # グレー色
+                GPIO.output(DO1_PIN, GPIO.LOW)  # GPIO出力もLOWに設定
             
             # 表示用画像作成
             cropped = frame[y:y + h, x:x + w]
@@ -250,12 +264,16 @@ def live_view_loop():
             # 画面更新
             cv2.imshow('Prediction', output_image)
             
-            # 'q'キーチェック
+            # キーボード入力チェック
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 print("Live thread: 'q' key pressed")
                 running = False
                 break
+            elif key == ord(' '):  # スペースキーでDI1状態を切り替え
+                virtual_di1_status = not virtual_di1_status
+                status_text = "ON" if virtual_di1_status else "OFF"
+                print(f"Virtual DI1 status changed to: {status_text}")
                 
             # ウィンドウが閉じられたかチェック
             try:
