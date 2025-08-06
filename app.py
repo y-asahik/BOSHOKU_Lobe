@@ -62,7 +62,6 @@ judgment_interval = 1.5  # 判定間隔（秒）
 current_frame = None
 last_judgment_time = 0
 last_prediction = "初期化中"
-last_prediction_color = (0, 0, 0)
 # テスト用DI状態制御
 virtual_di1_status = False  # テスト用の仮想DI1状態
 
@@ -148,7 +147,7 @@ def judgment_worker():
 
 # GPIO制御処理
 def process_judgment_result():
-    global last_prediction, last_prediction_color
+    global last_prediction
     
     try:
         result_data = result_queue.get_nowait()
@@ -157,20 +156,18 @@ def process_judgment_result():
         if result_data['prediction'] == 'OK':
             GPIO.output(DO1_PIN, GPIO.HIGH)
 #            GPIO.output(DO2_PIN, GPIO.LOW)
-            last_prediction_color = (255, 0, 0)  # 青色
             last_prediction = "OK"
         else :
             GPIO.output(DO1_PIN, GPIO.LOW)
 #            GPIO.output(DO2_PIN, GPIO.HIGH)
             last_prediction = "NG"
-            last_prediction_color = (0, 0, 255)  # 赤色
             
     except queue.Empty:
         pass  
 
 # ライブビュー表示と判定を行う関数
 def live_view_loop():
-    global running, current_frame, last_judgment_time, is_focus_initialized, last_prediction, last_prediction_color, virtual_di1_status
+    global running, current_frame, last_judgment_time, is_focus_initialized, last_prediction, virtual_di1_status
     
     # 初回フォーカス調整
     if not is_focus_initialized:
@@ -218,52 +215,78 @@ def live_view_loop():
                 # 判定結果の処理
                 process_judgment_result()
             else:
-                # DI1がOFFの場合：判定停止、表示を"---"に設定
-                last_prediction = "---"
-                last_prediction_color = (128, 128, 128)  # グレー色
+                # DI1がOFFの場合：判定停止、表示を"--"に設定
+                last_prediction = "--"
                 GPIO.output(DO1_PIN, GPIO.LOW)  # GPIO出力もLOWに設定
             
             # 表示用画像作成
+            # --- Modern UI Colors (BGR format for OpenCV) ---
+            COLOR_BG = (80, 62, 44)          # Dark Charcoal
+            COLOR_OK = (113, 204, 46)        # Green
+            COLOR_NG = (60, 76, 231)         # Red
+            COLOR_NEUTRAL = (94, 73, 52)     # Neutral Blue-Gray
+            COLOR_WHITE = (255, 255, 255)
+            COLOR_LIGHT_GRAY = (199, 195, 189)
+
+            # --- Layout Dimensions (Compact) ---
+            IMG_WIDTH = 320
+            HEADER_HEIGHT = 80
+            FOOTER_HEIGHT = 40
+            CAM_FEED_Y_GAP_TOP = 5
+            CAM_FEED_Y_GAP_BOTTOM = 10
+            # Total height is calculated based on components to ensure fit
+            IMG_HEIGHT = HEADER_HEIGHT + CAM_FEED_Y_GAP_TOP + h + CAM_FEED_Y_GAP_BOTTOM + FOOTER_HEIGHT
+            
+            # --- Create Base Image ---
+            output_image = np.full((IMG_HEIGHT, IMG_WIDTH, 3), COLOR_BG, dtype=np.uint8)
+
+            # --- Determine Status Color ---
+            if last_prediction == "OK":
+                status_color = COLOR_OK
+                status_text = "OK"
+            elif last_prediction == "NG":
+                status_color = COLOR_NG
+                status_text = "NG"
+            else:
+                status_color = COLOR_NEUTRAL
+                status_text = "--"
+
+            # --- Header ---
+            cv2.rectangle(output_image, (0, 0), (IMG_WIDTH, HEADER_HEIGHT), status_color, -1)
+            
+            # Draw Status Text
+            font_status = cv2.FONT_HERSHEY_DUPLEX
+            # Adjusted font size for smaller header
+            status_text_size = cv2.getTextSize(status_text, font_status, 2.5, 3)[0]
+            status_text_x = (IMG_WIDTH - status_text_size[0]) // 2
+            status_text_y = (HEADER_HEIGHT + status_text_size[1]) // 2
+            cv2.putText(output_image, status_text, (status_text_x, status_text_y), font_status, 2.5, COLOR_WHITE, 3, cv2.LINE_AA)
+
+            # --- Camera Feed ---
             cropped = frame[y:y + h, x:x + w]
+            # Place cropped image in the center
+            cam_feed_y_start = HEADER_HEIGHT + CAM_FEED_Y_GAP_TOP
+            cam_feed_x_start = (IMG_WIDTH - w) // 2
+            output_image[cam_feed_y_start:cam_feed_y_start + h, cam_feed_x_start:cam_feed_x_start + w] = cropped
+            # Draw a border around the camera feed
+            cv2.rectangle(output_image, (cam_feed_x_start - 2, cam_feed_y_start - 2), 
+                          (cam_feed_x_start + w + 2, cam_feed_y_start + h + 2), COLOR_LIGHT_GRAY, 1)
+
+            # --- Footer ---
+            footer_y_start = IMG_HEIGHT - FOOTER_HEIGHT
+            cv2.rectangle(output_image, (0, footer_y_start), (IMG_WIDTH, IMG_HEIGHT), COLOR_NEUTRAL, -1)
             
-            # 判定結果を画像に描画
-            padding_height = 150
-            bg_color = (255, 255, 255)
-#            new_width = round(w * 1.5)
-            new_width = round(w * 1.5)
-            output_image = np.full((h + padding_height, new_width, 3), bg_color, dtype=np.uint8)
-            
-            start_x = (new_width - w) // 2
-            output_image[padding_height:, start_x:start_x + w, :] = cropped
-            
-            # テキスト表示
-            font_common = cv2.FONT_HERSHEY_SIMPLEX
-            
-            # 予測結果を表示
-            text_size = cv2.getTextSize(last_prediction, font_common, 1, 2)[0]
-            text_x = (new_width - text_size[0]) // 2
-            text_y = padding_height // 3
-            cv2.putText(output_image, last_prediction, (text_x, text_y),
-                    font_common, 1, last_prediction_color, 2)
-            
-            # 日付と時間を表示
+            # Draw Date and Time
             now = datetime.now()
-            date_text = now.strftime('%Y-%m-%d')
-            time_text = now.strftime('%H:%M:%S')
-            
-            date_text_size = cv2.getTextSize(f"Date: {date_text}", font_common, 0.7, 1)[0]
-            date_text_x = (new_width - date_text_size[0]) // 2
-            date_text_y = text_y + 50
-            cv2.putText(output_image, f"Date: {date_text}", (date_text_x, date_text_y),
-                        font_common, 0.7, (0, 0, 0), 1)
-            
-            time_text_x = date_text_x
-            time_text_y = date_text_y + 30
-            cv2.putText(output_image, f"Time: {time_text}", (time_text_x, time_text_y),
-                        font_common, 0.7, (0, 0, 0), 1)
+            dt_text = now.strftime('%Y-%m-%d %H:%M:%S')
+            font_footer = cv2.FONT_HERSHEY_SIMPLEX
+            footer_text_size = cv2.getTextSize(dt_text, font_footer, 0.6, 1)[0]
+            footer_text_x = (IMG_WIDTH - footer_text_size[0]) // 2
+            footer_text_y = footer_y_start + (FOOTER_HEIGHT + footer_text_size[1]) // 2
+            cv2.putText(output_image, dt_text, (footer_text_x, footer_text_y), font_footer, 0.6, COLOR_WHITE, 1, cv2.LINE_AA)
             
             # 画面更新
-            cv2.imshow('Prediction', output_image)
+            cv2.imshow('BOSHOKU AI Inspector', output_image)
             
             # キーボード入力チェック
             key = cv2.waitKey(1) & 0xFF
@@ -278,7 +301,7 @@ def live_view_loop():
                 
             # ウィンドウが閉じられたかチェック
             try:
-                window_prop = cv2.getWindowProperty('Prediction', cv2.WND_PROP_VISIBLE)
+                window_prop = cv2.getWindowProperty('BOSHOKU AI Inspector', cv2.WND_PROP_VISIBLE)
                 if window_prop < 1:
                     print("Window closed by user")
                     running = False
