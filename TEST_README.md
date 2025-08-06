@@ -17,7 +17,7 @@ app.pyにキーボードでDI1状態を疑似的に制御する機能を追加�
 ## 元の実装に戻す方法
 app.pyの以下の変更を元に戻してください：
 
-### 1. 仮想DI状態の変数を削除またはコメントアウト（66～67行）
+### 1. 仮想DI状態の変数を削除またはコメントアウト（67行）
 ```python
 # virtual_di1_status = False  # この行を削除またはコメントアウト
 ```
@@ -31,7 +31,7 @@ global running, current_frame, last_judgment_time, is_focus_initialized, last_pr
 global running, current_frame, last_judgment_time, is_focus_initialized, last_prediction, last_prediction_color
 ```
 
-### 3. GPIO読み取りのコメントを外す（197～199行）
+### 3. GPIO読み取りのコメントを外す（198～199行）
 ```python
 # 現在（テスト用）
 # di1_status = GPIO.input(DI1_PIN)  # 実際のGPIO読み取りをコメントアウト
